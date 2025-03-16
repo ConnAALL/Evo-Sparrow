@@ -1,0 +1,22 @@
+P1 LSTM  P2 LSTM  P3 Random (Multi-Processing)
+Games Played: 1000000
+Player 1 Total Score: 833683.0
+Player 1 Total Wins: 248362
+Player 1 Total Draws: 443583
+Player 1 Total Loss (No Point Loss Someone Else Won): 134618
+Player 1 Deal In (Loss Point): 173437
+Player 1 Wins / Game Count: 0.248362
+
+Player 2 Total Score: 827904.0
+Player 2 Total Wins: 247708
+Player 2 Total Draws: 443583
+Player 2 Total Loss (No Point Loss Someone Else Won): 135158
+Player 2 Deal In (Loss Point): 173551
+Player 2 Wins / Game Count: 0.247708
+
+Player 3 Total Score: -1661587.0
+Player 3 Total Wins: 64813
+Player 3 Total Draws: 443583
+Player 3 Total Loss (No Point Loss Someone Else Won): 105248
+Player 3 Deal In (Loss Point): 386356
+Player 3 Wins / Game Count: 0.064813
