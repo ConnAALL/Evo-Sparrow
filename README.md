@@ -17,3 +17,5 @@ This folder has the code for viewing the progress of a training run. It has a sc
 ### Benchmarking
 
 After a model is trained, you can benchmark the weight file. The results will be saved into a .txt file.
+
+> The project uses the pgx library to simulate the game. We are using a slightly modified version of the library for saving the scores. Please use the library folder that already exists in the project. The scripts are adjusted to look at the upper-level folder when importing the library, so it should work as it is. 
