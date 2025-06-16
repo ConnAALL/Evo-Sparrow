@@ -49,7 +49,6 @@ def run_script(script_name):
 def main():
     # List of scripts to run in order
     scripts = [
-        "ppo_rule_rule.py",
         "ppo_ppo_rule.py",
         "ppo_ppo_ppo.py",
     ]
