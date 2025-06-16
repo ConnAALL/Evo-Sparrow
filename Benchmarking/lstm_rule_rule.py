@@ -175,7 +175,7 @@ if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
 
     START_DT = "241104_234416_40"
-    MODEL_PATH = f'../{START_DT}.pth'
+    MODEL_PATH = f'agents/{START_DT}.pth'
     TOTAL_GAME_COUNT = 1000000  # 1,000,000 games
     HIDDEN_LAYER_SIZE = 32
     LSTM_LAYER_COUNT = 3

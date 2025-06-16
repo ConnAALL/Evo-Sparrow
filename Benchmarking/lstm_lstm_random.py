@@ -202,7 +202,7 @@ def merge_results(results_list):
 
 if __name__ == '__main__':
     MODEL_START_DT = "241104_234416_40"
-    MODEL_PATH = f'../{MODEL_START_DT}.pth'
+    MODEL_PATH = f'agents/{MODEL_START_DT}.pth'
     TOTAL_GAME_COUNT = 1000000
     HIDDEN_LAYER_SIZE = 32
     LSTM_LAYER_COUNT = 3

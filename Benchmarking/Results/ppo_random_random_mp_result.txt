@@ -1,0 +1,22 @@
+P1 PPO  P2 Random  P3 Random (Multi-Processing)
+Games Played: 1000000
+Player 1 Total Score: 1600173.0
+Player 1 Total Wins: 309189
+Player 1 Total Draws: 547035
+Player 1 Total Loss (No Point Loss Someone Else Won): 53780
+Player 1 Deal In (Loss Point): 89996
+Player 1 Wins / Game Count: 0.309189
+
+Player 2 Total Score: -797670.0
+Player 2 Total Wins: 72707
+Player 2 Total Draws: 547035
+Player 2 Total Loss (No Point Loss Someone Else Won): 136949
+Player 2 Deal In (Loss Point): 243309
+Player 2 Wins / Game Count: 0.072707
+
+Player 3 Total Score: -802503.0
+Player 3 Total Wins: 72165
+Player 3 Total Draws: 547035
+Player 3 Total Loss (No Point Loss Someone Else Won): 137692
+Player 3 Deal In (Loss Point): 243108
+Player 3 Wins / Game Count: 0.072165

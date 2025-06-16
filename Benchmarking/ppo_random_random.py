@@ -4,36 +4,32 @@ import torch
 import numpy as np
 import jax
 import random
-import multiprocessing
 
-# Use spawn to start subprocesses
+import multiprocessing
 multiprocessing.set_start_method('spawn', force=True)
 from multiprocessing import cpu_count
 from tqdm import tqdm
 
 from env_management import *
-from lstm_structure import *
+from train_rl_agent import ActorCriticLSTM
 
-def lstm_lstm_rule_benchmark_core(MODEL_PATH: str,
-                                    GAME_COUNT: int,
-                                    HIDDEN_LAYER_SIZE: int,
-                                    LSTM_LAYER_COUNT: int,
-                                    FC_LAYER_COUNT: int,
-                                    HIDDEN_FC_SIZE: int,
-                                    core_id: int):
+
+def ppo_random_random_benchmark_core(MODEL_PATH: str,
+                                     GAME_COUNT: int,
+                                     HIDDEN_LAYER_SIZE: int,
+                                     LSTM_LAYER_COUNT: int,
+                                     FC_LAYER_COUNT: int,
+                                     HIDDEN_FC_SIZE: int,
+                                     core_id: int):
     """
-    Run the benchmark on one core with:
-      - Player 0: LSTM agent (using model0)
-      - Player 1: LSTM agent (using model1)
-      - Player 2: Rule-based agent.
-    A fixed-width tqdm progress bar (positioned by core_id) shows progress.
+    Run the PPO-Random-Random benchmark for a subset of games on one core.
     """
     INPUT_SIZE = 37
     OUTPUT_SIZE = 6
     ENV_ID = "sparrow_mahjong"
 
     def get_valid_actions(state, idx, player_idx):
-        """Get valid actions for a player (red Dora moves are represented as negative indices)."""
+        """Get valid actions for a player (with red Dora as negative indices)."""
         shuffled_hands = state._hands[idx]
         shuffled_reds = state._n_red_in_hands[idx]
         original_hands = shuffled_to_normal(state, shuffled_hands, idx)
@@ -48,120 +44,95 @@ def lstm_lstm_rule_benchmark_core(MODEL_PATH: str,
         for action in valid_indices:
             tile_count = player_hand[action]
             red_count = red_tile_counts[action]
-            # Append red Dora moves as negative indices.
+            # Add red Dora actions as negative indices
             for _ in range(red_count):
                 complete_actions.append(-action)
-            # Append regular moves.
+            # Add regular tile actions as positive indices
             for _ in range(tile_count - red_count):
                 complete_actions.append(action)
         return complete_actions
 
-    def handle_batch_player_move(model0, model1, state, key, hidden0, hidden1):
+    def handle_batch_player_move(model, state, key, hidden):
         """
-        For a batch of games, determine moves for:
-          - Player 0: LSTM agent (model0)
-          - Player 1: LSTM agent (model1)
-          - Player 2: Rule-based agent.
+        Handle moves for all games in the batch:
+         - Player 0 uses the PPO agent.
+         - Players 1 and 2 choose a random valid move.
         """
         key, subkey = jax.random.split(key)
         picked_actions = np.zeros(GAME_COUNT, dtype=int)
         active_games = ~(state.terminated | state.truncated)
+        # Identify games where the current player is 0 (PPO agent)
+        player1_turns = (state.current_player == 0) & active_games
 
-        # --- Process LSTM agent for Player 0 ---
-        player0_turns = (state.current_player == 0) & active_games
-        indices_p0 = np.where(player0_turns)[0]
-        if len(indices_p0) > 0:
-            input_tensors0 = []
-            valid_moves_list0 = []
-            for idx in indices_p0:
+        # Process PPO agent moves for player 0
+        indices_player1 = np.where(player1_turns)[0]
+        if len(indices_player1) > 0:
+            input_tensors = []
+            valid_moves_list = []
+            for idx in indices_player1:
                 valid_moves = get_valid_actions(state, idx, 0)
-                valid_moves_list0.append(valid_moves)
-                # Note: Using the three-argument version to get player 0's state.
-                input_array = state_to_input(state, idx, 0)
-                input_tensor = torch.tensor(input_array, dtype=torch.float32).unsqueeze(0)
-                input_tensors0.append(input_tensor)
-            input_batch0 = torch.stack(input_tensors0, dim=0)
-            h0_0 = hidden0[0][:, indices_p0, :]
-            c0_0 = hidden0[1][:, indices_p0, :]
-            device = next(model0.parameters()).device
-            input_batch0 = input_batch0.to(device)
-            h0_0 = h0_0.to(device)
-            c0_0 = c0_0.to(device)
+                valid_moves_list.append(valid_moves)
+                input_array = state_to_input(state, idx, 0)  # Use 3-parameter version
+                input_tensor = torch.tensor(input_array, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # PPO needs (batch, seq, features)
+                input_tensors.append(input_tensor)
+            input_batch = torch.cat(input_tensors, dim=0)  # Concatenate along batch dimension
+            h0 = hidden[0][:, indices_player1, :]
+            c0 = hidden[1][:, indices_player1, :]
+            device = next(model.parameters()).device
+            input_batch = input_batch.to(device)
+            h0 = h0.to(device)
+            c0 = c0.to(device)
+            
             with torch.no_grad():
-                output0, (h_n0, c_n0) = model0(input_batch0, (h0_0, c0_0))
-            max_indices0 = output0.argmax(dim=1)
-            for i, idx in enumerate(indices_p0):
-                chosen = max_indices0[i].item()
-                action = abs(valid_moves_list0[i][chosen])
-                picked_actions[idx] = action
-                hidden0[0][:, idx, :] = h_n0[:, i, :]
-                hidden0[1][:, idx, :] = c_n0[:, i, :]
+                # Use PPO's act method
+                actions_list = []
+                for i in range(len(indices_player1)):
+                    single_input = input_batch[i:i+1]  # Keep batch dimension
+                    single_hidden = (h0[:, i:i+1, :], c0[:, i:i+1, :])
+                    action, _, _, new_hidden = model.act(single_input, single_hidden)
+                    actions_list.append(action.item())
+                    # Update hidden state
+                    idx = indices_player1[i]
+                    hidden[0][:, idx, :] = new_hidden[0][:, 0, :]
+                    hidden[1][:, idx, :] = new_hidden[1][:, 0, :]
+            
+            for i, idx in enumerate(indices_player1):
+                chosen = actions_list[i]
+                valid_moves = valid_moves_list[i]
+                picked_action = abs(valid_moves[chosen])
+                picked_actions[idx] = picked_action
 
-        # --- Process LSTM agent for Player 1 ---
-        player1_turns = (state.current_player == 1) & active_games
-        indices_p1 = np.where(player1_turns)[0]
-        if len(indices_p1) > 0:
-            input_tensors1 = []
-            valid_moves_list1 = []
-            for idx in indices_p1:
-                valid_moves = get_valid_actions(state, idx, 1)
-                valid_moves_list1.append(valid_moves)
-                # Use the three-argument version for player 1.
-                input_array = state_to_input(state, idx, 1)
-                input_tensor = torch.tensor(input_array, dtype=torch.float32).unsqueeze(0)
-                input_tensors1.append(input_tensor)
-            input_batch1 = torch.stack(input_tensors1, dim=0)
-            h0_1 = hidden1[0][:, indices_p1, :]
-            c0_1 = hidden1[1][:, indices_p1, :]
-            device1 = next(model1.parameters()).device
-            input_batch1 = input_batch1.to(device1)
-            h0_1 = h0_1.to(device1)
-            c0_1 = c0_1.to(device1)
-            with torch.no_grad():
-                output1, (h_n1, c_n1) = model1(input_batch1, (h0_1, c0_1))
-            max_indices1 = output1.argmax(dim=1)
-            for i, idx in enumerate(indices_p1):
-                chosen = max_indices1[i].item()
-                action = abs(valid_moves_list1[i][chosen])
-                picked_actions[idx] = action
-                hidden1[0][:, idx, :] = h_n1[:, i, :]
-                hidden1[1][:, idx, :] = c_n1[:, i, :]
-
-        # --- Process Rule-based agent for Player 2 ---
-        player_rule = (state.current_player == 2) & active_games
-        indices_rule = np.where(player_rule)[0]
-        for idx in indices_rule:
-            # Use get_valid_actions with player index 2.
-            actions = get_valid_actions(state, idx, 2)
-            hand = actions_to_hand(actions)
-            # For the rule-based agent, determine the next move using the rule functions.
-            current_dora = state._dora[idx].tolist() + 1
-            picked_tile = choose_next_move(hand, current_dora)
-            picked_action = tile_to_action(picked_tile)
+        # Process random moves for players 1 and 2
+        indices_other = np.where(~player1_turns & active_games)[0]
+        for idx in indices_other:
+            legal_action_list = state.legal_action_mask[idx].tolist()
+            valid_indices = [i for i, val in enumerate(legal_action_list) if val]
+            picked_action = random.choice(valid_indices)
             picked_actions[idx] = picked_action
 
-        return picked_actions, key, hidden0, hidden1
+        return picked_actions, key, hidden
 
-    def play_games(model0, model1):
+    def play_games(model):
         init, step = init_env(ENV_ID)
         KEY = reset_random_seed()
         KEY, subkey = jax.random.split(KEY)
         keys = jax.random.split(subkey, GAME_COUNT)
         state = init(keys)
-        hidden0 = model0.init_hidden(GAME_COUNT)
-        hidden1 = model1.init_hidden(GAME_COUNT)
+        hidden = model.init_hidden(GAME_COUNT)
         processed_games = set()
         all_rewards = []
+        # Set up a fixed-width tqdm progress bar for this core.
         progress_bar = tqdm(
             total=GAME_COUNT,
-            desc=f"Core {core_id}".ljust(8),
+            desc=f"Core {core_id}".ljust(8),  # Fixed width for the core label
             position=core_id,
             leave=True,
-            ncols=100,
+            ncols=100,  # Fixed total width of the progress bar
             bar_format="{desc}: {percentage:3.0f}%|{bar}| {n:05d}/{total:05d} [{elapsed:>8s}<{remaining:>8s}, {rate_fmt:^10}]"
         )
+
         while not (state.terminated | state.truncated).all():
-            picked_actions, KEY, hidden0, hidden1 = handle_batch_player_move(model0, model1, state, KEY, hidden0, hidden1)
+            picked_actions, KEY, hidden = handle_batch_player_move(model, state, KEY, hidden)
             state = step(state, picked_actions)
             prev_count = len(processed_games)
             for i in range(GAME_COUNT):
@@ -169,35 +140,25 @@ def lstm_lstm_rule_benchmark_core(MODEL_PATH: str,
                     game_reward = state.rewards[i].tolist()
                     all_rewards.append(game_reward)
                     processed_games.add(i)
+            # Update progress bar with the number of newly finished games.
             progress_bar.update(len(processed_games) - prev_count)
         progress_bar.close()
         return all_rewards
 
-    # Initialize and load the two LSTM models.
-    lstm_model_p0 = SparrowMahjongLSTM(
+    # Initialize and load the PPO model.
+    ppo_model = ActorCriticLSTM(
         input_size=INPUT_SIZE,
         hidden_size=HIDDEN_LAYER_SIZE,
-        output_size=OUTPUT_SIZE,
+        num_actions=OUTPUT_SIZE,
         num_lstm_layers=LSTM_LAYER_COUNT,
         num_fc_layers=FC_LAYER_COUNT,
         fc_hidden_size=HIDDEN_FC_SIZE
     )
-    lstm_model_p1 = SparrowMahjongLSTM(
-        input_size=INPUT_SIZE,
-        hidden_size=HIDDEN_LAYER_SIZE,
-        output_size=OUTPUT_SIZE,
-        num_lstm_layers=LSTM_LAYER_COUNT,
-        num_fc_layers=FC_LAYER_COUNT,
-        fc_hidden_size=HIDDEN_FC_SIZE
-    )
-    # Load saved weights (using the same file for both networks; change if needed).
-    lstm_model_p0.load_state_dict(torch.load(MODEL_PATH))
-    lstm_model_p1.load_state_dict(torch.load(MODEL_PATH))
-    lstm_model_p0.eval()
-    lstm_model_p1.eval()
-
-    all_rewards = play_games(lstm_model_p0, lstm_model_p1)
+    ppo_model.load_state_dict(torch.load(MODEL_PATH))
+    ppo_model.eval()
+    all_rewards = play_games(ppo_model)
     return all_rewards
+
 
 def merge_results(results_list):
     merged = []
@@ -205,19 +166,31 @@ def merge_results(results_list):
         merged.extend(result)
     return merged
 
+
+def game_result(game, player_idx):
+    player_score = game[player_idx]
+    other_scores = [score for idx, score in enumerate(game) if idx != player_idx]
+    if player_score > 0:
+        return 1
+    elif player_score == 0 and all(score == 0 for score in other_scores):
+        return 0
+    elif player_score == 0 and any(score != 0 for score in other_scores):
+        return -1
+    elif player_score < 0:
+        return -2
+
+
 if __name__ == '__main__':
-    MODEL_START_DT = "241104_234416_40"
-    MODEL_PATH = f'agents/{MODEL_START_DT}.pth'
+    MODEL_PATH = "agents/ppo_agent_update_1750.pth"
     TOTAL_GAME_COUNT = 1000000
     HIDDEN_LAYER_SIZE = 32
     LSTM_LAYER_COUNT = 3
     FC_LAYER_COUNT = 8
     HIDDEN_FC_SIZE = 32
 
+    # Determine available CPU cores and distribute games among them.
     num_cores = cpu_count()
     print(f"Detected {num_cores} CPU cores.")
-
-    # Distribute games among cores.
     games_per_core = TOTAL_GAME_COUNT // num_cores
     remaining_games = TOTAL_GAME_COUNT % num_cores
     game_counts = [games_per_core] * num_cores
@@ -233,28 +206,16 @@ if __name__ == '__main__':
                   i) for i in range(num_cores)]
 
     with multiprocessing.Pool(processes=num_cores) as pool:
-        results = pool.starmap(lstm_lstm_rule_benchmark_core, pool_args)
+        results = pool.starmap(ppo_random_random_benchmark_core, pool_args)
 
     merged_results = merge_results(results)
 
-    output_filename = f"lstm_lstm_rule_mp_result_{MODEL_START_DT}.txt"
+    output_filename = f"ppo_random_random_mp_result_1750_1M.txt"
     with open(output_filename, mode="a") as f:
-        f.write("P1 LSTM  P2 LSTM  P3 Rule-Based (Multi-Processing)\n")
+        f.write("P1 PPO  P2 Random  P3 Random (Multi-Processing)\n")
         f.write("Games Played: " + str(len(merged_results)) + "\n")
 
-        def game_result(game, player_idx):
-            player_score = game[player_idx]
-            other_scores = [score for idx, score in enumerate(game) if idx != player_idx]
-            if player_score > 0:
-                return 1
-            elif player_score == 0 and all(score == 0 for score in other_scores):
-                return 0
-            elif player_score == 0 and any(score != 0 for score in other_scores):
-                return -1
-            elif player_score < 0:
-                return -2
-
-        # --- Player 1 (LSTM) Results ---
+        # --- Player 1 (PPO) Results ---
         player_1_total_score = sum(game[0] for game in merged_results)
         player_1_results = [game_result(game, 0) for game in merged_results]
         total_player_1_wins = player_1_results.count(1)
@@ -270,7 +231,7 @@ if __name__ == '__main__':
         f.write("Player 1 Deal In (Loss Point): " + str(total_player_1_deal_in) + "\n")
         f.write("Player 1 Wins / Game Count: " + str(player_1_average_wins) + "\n\n")
 
-        # --- Player 2 (LSTM) Results ---
+        # --- Player 2 (Random) Results ---
         player_2_total_score = sum(game[1] for game in merged_results)
         player_2_results = [game_result(game, 1) for game in merged_results]
         total_player_2_wins = player_2_results.count(1)
@@ -286,7 +247,7 @@ if __name__ == '__main__':
         f.write("Player 2 Deal In (Loss Point): " + str(total_player_2_deal_in) + "\n")
         f.write("Player 2 Wins / Game Count: " + str(player_2_average_wins) + "\n\n")
 
-        # --- Player 3 (Rule-Based) Results ---
+        # --- Player 3 (Random) Results ---
         player_3_total_score = sum(game[2] for game in merged_results)
         player_3_results = [game_result(game, 2) for game in merged_results]
         total_player_3_wins = player_3_results.count(1)
@@ -302,4 +263,4 @@ if __name__ == '__main__':
         f.write("Player 3 Deal In (Loss Point): " + str(total_player_3_deal_in) + "\n")
         f.write("Player 3 Wins / Game Count: " + str(player_3_average_wins) + "\n")
     
-    print(f"Benchmark completed. Merged results written to {output_filename}.")
+    print(f"Benchmark completed. Merged results written to {output_filename}.") 
