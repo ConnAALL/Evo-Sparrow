@@ -17,16 +17,16 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from train_rl_agent import ActorCriticLSTM
 
 
-def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
-                                 GAME_COUNT: int,
-                                 HIDDEN_LAYER_SIZE: int,
-                                 LSTM_LAYER_COUNT: int,
-                                 FC_LAYER_COUNT: int,
-                                 HIDDEN_FC_SIZE: int,
-                                 core_id: int):
+def ppo_ppo_rule_benchmark_core(PPO_MODEL_PATH: str,
+                                GAME_COUNT: int,
+                                HIDDEN_LAYER_SIZE: int,
+                                LSTM_LAYER_COUNT: int,
+                                FC_LAYER_COUNT: int,
+                                HIDDEN_FC_SIZE: int,
+                                core_id: int):
     """
     Run a subset of games on one core with a progress bar.
-    This version is for the PPO vs. Rule-Based vs. Rule-Based benchmark.
+    This version is for the PPO vs. PPO vs. Rule-Based benchmark.
     """
     INPUT_SIZE = 37
     OUTPUT_SIZE = 6
@@ -54,29 +54,28 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
                 complete_actions.append(action)
         return complete_actions
 
-    def handle_batch_player_move(model, state, key, hidden):
+    def handle_batch_player_move(ppo_model1, ppo_model2, state, key, ppo_hidden1, ppo_hidden2):
         """Handle moves for all games in the batch."""
         key, subkey = jax.random.split(key)
         picked_actions = np.zeros(GAME_COUNT, dtype=int)
         active_games = ~(state.terminated | state.truncated)
-        # Identify games where the current player is 0 (our PPO agent)
-        player1_turns = (state.current_player == 0) & active_games
 
-        # Process PPO agent moves (player 0)
-        indices_player1 = np.where(player1_turns)[0]
-        if len(indices_player1) > 0:
+        # --- Process PPO agent for Player 0 ---
+        player0_turns = (state.current_player == 0) & active_games
+        indices_p0 = np.where(player0_turns)[0]
+        if len(indices_p0) > 0:
             input_tensors = []
             valid_moves_list = []
-            for idx in indices_player1:
+            for idx in indices_p0:
                 valid_moves = get_valid_actions(state, idx, 0)
                 valid_moves_list.append(valid_moves)
                 input_array = state_to_input(state, idx, 0)  # Use 3-parameter version
                 input_tensor = torch.tensor(input_array, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # PPO needs (batch, seq, features)
                 input_tensors.append(input_tensor)
             input_batch = torch.cat(input_tensors, dim=0)  # Concatenate along batch dimension
-            h0 = hidden[0][:, indices_player1, :]
-            c0 = hidden[1][:, indices_player1, :]
-            device = next(model.parameters()).device
+            h0 = ppo_hidden1[0][:, indices_p0, :]
+            c0 = ppo_hidden1[1][:, indices_p0, :]
+            device = next(ppo_model1.parameters()).device
             input_batch = input_batch.to(device)
             h0 = h0.to(device)
             c0 = c0.to(device)
@@ -84,25 +83,65 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
             with torch.no_grad():
                 # Use PPO's act method
                 actions_list = []
-                for i in range(len(indices_player1)):
+                for i in range(len(indices_p0)):
                     single_input = input_batch[i:i+1]  # Keep batch dimension
                     single_hidden = (h0[:, i:i+1, :], c0[:, i:i+1, :])
-                    action, _, _, new_hidden = model.act(single_input, single_hidden)
+                    action, _, _, new_hidden = ppo_model1.act(single_input, single_hidden)
                     actions_list.append(action.item())
                     # Update hidden state
-                    idx = indices_player1[i]
-                    hidden[0][:, idx, :] = new_hidden[0][:, 0, :]
-                    hidden[1][:, idx, :] = new_hidden[1][:, 0, :]
+                    idx = indices_p0[i]
+                    ppo_hidden1[0][:, idx, :] = new_hidden[0][:, 0, :]
+                    ppo_hidden1[1][:, idx, :] = new_hidden[1][:, 0, :]
             
-            for i, idx in enumerate(indices_player1):
+            for i, idx in enumerate(indices_p0):
                 chosen = actions_list[i]
                 valid_moves = valid_moves_list[i]
                 picked_action = abs(valid_moves[chosen])
                 picked_actions[idx] = picked_action
 
-        # Process moves for other players (rule-based agents)
-        indices_other = np.where(~player1_turns & active_games)[0]
-        for idx in indices_other:
+        # --- Process PPO agent for Player 1 ---
+        player1_turns = (state.current_player == 1) & active_games
+        indices_p1 = np.where(player1_turns)[0]
+        if len(indices_p1) > 0:
+            input_tensors1 = []
+            valid_moves_list1 = []
+            for idx in indices_p1:
+                valid_moves = get_valid_actions(state, idx, 1)
+                valid_moves_list1.append(valid_moves)
+                input_array = state_to_input(state, idx, 1)  # Use 3-parameter version
+                input_tensor = torch.tensor(input_array, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # PPO needs (batch, seq, features)
+                input_tensors1.append(input_tensor)
+            input_batch1 = torch.cat(input_tensors1, dim=0)  # Concatenate along batch dimension
+            h0_1 = ppo_hidden2[0][:, indices_p1, :]
+            c0_1 = ppo_hidden2[1][:, indices_p1, :]
+            device1 = next(ppo_model2.parameters()).device
+            input_batch1 = input_batch1.to(device1)
+            h0_1 = h0_1.to(device1)
+            c0_1 = c0_1.to(device1)
+            
+            with torch.no_grad():
+                # Use PPO's act method
+                actions_list1 = []
+                for i in range(len(indices_p1)):
+                    single_input = input_batch1[i:i+1]  # Keep batch dimension
+                    single_hidden = (h0_1[:, i:i+1, :], c0_1[:, i:i+1, :])
+                    action, _, _, new_hidden = ppo_model2.act(single_input, single_hidden)
+                    actions_list1.append(action.item())
+                    # Update hidden state
+                    idx = indices_p1[i]
+                    ppo_hidden2[0][:, idx, :] = new_hidden[0][:, 0, :]
+                    ppo_hidden2[1][:, idx, :] = new_hidden[1][:, 0, :]
+            
+            for i, idx in enumerate(indices_p1):
+                chosen = actions_list1[i]
+                valid_moves = valid_moves_list1[i]
+                picked_action = abs(valid_moves[chosen])
+                picked_actions[idx] = picked_action
+
+        # --- Process Rule-based agent for Player 2 ---
+        player2_turns = (state.current_player == 2) & active_games
+        indices_p2 = np.where(player2_turns)[0]
+        for idx in indices_p2:
             current_player = state.current_player[idx]
             actions = get_valid_actions(state, idx, current_player)
             hand = actions_to_hand(actions)
@@ -111,15 +150,16 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
             picked_action = tile_to_action(picked_tile)
             picked_actions[idx] = picked_action
 
-        return picked_actions, key, hidden
+        return picked_actions, key, ppo_hidden1, ppo_hidden2
 
-    def play_games(model):
+    def play_games(ppo_model1, ppo_model2):
         init, step = init_env(ENV_ID)
         KEY = reset_random_seed()
         KEY, subkey = jax.random.split(KEY)
         keys = jax.random.split(subkey, GAME_COUNT)
         state = init(keys)
-        hidden = model.init_hidden(GAME_COUNT)
+        ppo_hidden1 = ppo_model1.init_hidden(GAME_COUNT)
+        ppo_hidden2 = ppo_model2.init_hidden(GAME_COUNT)
 
         processed_games = set()
         all_rewards = []
@@ -133,7 +173,8 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
             bar_format="{desc}: {percentage:3.0f}%|{bar}| {n:05d}/{total:05d} [{elapsed:>8s}<{remaining:>8s}, {rate_fmt:^10}]"
         )
         while not (state.terminated | state.truncated).all():
-            picked_actions, KEY, hidden = handle_batch_player_move(model, state, KEY, hidden)
+            picked_actions, KEY, ppo_hidden1, ppo_hidden2 = handle_batch_player_move(
+                ppo_model1, ppo_model2, state, KEY, ppo_hidden1, ppo_hidden2)
             state = step(state, picked_actions)
             prev_count = len(processed_games)
             for i in range(GAME_COUNT):
@@ -145,8 +186,8 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
         progress_bar.close()
         return all_rewards
 
-    # Initialize the PPO model
-    ppo_model = ActorCriticLSTM(
+    # Initialize the PPO models
+    ppo_model1 = ActorCriticLSTM(
         input_size=INPUT_SIZE,
         hidden_size=HIDDEN_LAYER_SIZE,
         num_actions=OUTPUT_SIZE,
@@ -154,9 +195,22 @@ def ppo_rule_rule_benchmark_core(MODEL_PATH: str,
         num_fc_layers=FC_LAYER_COUNT,
         fc_hidden_size=HIDDEN_FC_SIZE
     )
-    ppo_model.load_state_dict(torch.load(MODEL_PATH))
-    ppo_model.eval()  # Set model to evaluation mode
-    return play_games(ppo_model)
+
+    ppo_model2 = ActorCriticLSTM(
+        input_size=INPUT_SIZE,
+        hidden_size=HIDDEN_LAYER_SIZE,
+        num_actions=OUTPUT_SIZE,
+        num_lstm_layers=LSTM_LAYER_COUNT,
+        num_fc_layers=FC_LAYER_COUNT,
+        fc_hidden_size=HIDDEN_FC_SIZE
+    )
+    
+    ppo_model1.load_state_dict(torch.load(PPO_MODEL_PATH))
+    ppo_model2.load_state_dict(torch.load(PPO_MODEL_PATH))
+    ppo_model1.eval()
+    ppo_model2.eval()
+
+    return play_games(ppo_model1, ppo_model2)
 
 
 def merge_results(results_list):
@@ -184,40 +238,67 @@ if __name__ == "__main__":
     # Use the spawn start method for better compatibility with PyTorch
     multiprocessing.set_start_method('spawn', force=True)
 
-    MODEL_PATH = "agents/ppo_agent_update_1750.pth"
+    PPO_MODEL_PATH = "agents/ppo_agent_update_1750.pth"
     TOTAL_GAME_COUNT = 1000000
+    SPLIT = 10  # Split total games into rounds to manage memory usage
     HIDDEN_LAYER_SIZE = 32
     LSTM_LAYER_COUNT = 3
     FC_LAYER_COUNT = 8
     HIDDEN_FC_SIZE = 32
 
+    # Calculate games per round
+    games_per_round = TOTAL_GAME_COUNT // SPLIT
+    remaining_total_games = TOTAL_GAME_COUNT % SPLIT
+    
     num_cores = cpu_count() - 2
-    print(f"Detected {num_cores} CPU cores.")
-    games_per_core = TOTAL_GAME_COUNT // num_cores
-    remaining_games = TOTAL_GAME_COUNT % num_cores
-    game_counts = [games_per_core] * num_cores
-    for i in range(remaining_games):
-        game_counts[i] += 1
+    print(f"Using {num_cores} CPU cores (reserved 2 cores).")
+    print(f"Running {TOTAL_GAME_COUNT} total games in {SPLIT} rounds of ~{games_per_round} games each.")
+    
+    # Collect results from all rounds
+    all_round_results = []
+    
+    for round_num in range(SPLIT):
+        # Calculate games for this round (handle remaining games in the last round)
+        current_round_games = games_per_round
+        if round_num == SPLIT - 1:  # Last round gets any remaining games
+            current_round_games += remaining_total_games
+            
+        print(f"\n--- Round {round_num + 1}/{SPLIT}: Running {current_round_games} games ---")
+        
+        # Distribute round games among cores
+        games_per_core = current_round_games // num_cores
+        remaining_games = current_round_games % num_cores
+        game_counts = [games_per_core] * num_cores
+        for i in range(remaining_games):
+            game_counts[i] += 1
 
-    pool_args = [
-        (MODEL_PATH,
-         game_counts[i],
-         HIDDEN_LAYER_SIZE,
-         LSTM_LAYER_COUNT,
-         FC_LAYER_COUNT,
-         HIDDEN_FC_SIZE,
-         i)
-        for i in range(num_cores)
-    ]
+        pool_args = [
+            (PPO_MODEL_PATH,
+             game_counts[i],
+             HIDDEN_LAYER_SIZE,
+             LSTM_LAYER_COUNT,
+             FC_LAYER_COUNT,
+             HIDDEN_FC_SIZE,
+             i)
+            for i in range(num_cores)
+        ]
 
-    with multiprocessing.Pool(processes=num_cores) as pool:
-        results_list = pool.starmap(ppo_rule_rule_benchmark_core, pool_args)
+        with multiprocessing.Pool(processes=num_cores) as pool:
+            round_results = pool.starmap(ppo_ppo_rule_benchmark_core, pool_args)
+        
+        # Merge results from this round and add to total
+        round_merged = merge_results(round_results)
+        all_round_results.extend(round_merged)
+        
+        print(f"Round {round_num + 1} completed: {len(round_merged)} games finished")
+    
+    # Final merged results from all rounds
+    merged_results = all_round_results
+    print(f"\nAll rounds completed! Total games played: {len(merged_results)}")
 
-    merged_results = merge_results(results_list)
-
-    output_filename = f"ppo_rule_rule_mp_result_1750_1M.txt"
+    output_filename = f"ppo_ppo_rule_mp_result_1750_1M.txt"
     with open(output_filename, mode="a") as f:
-        f.write("P1 PPO  P2 Rule-Based  P3 Rule-Based (Multi-Processing)\n")
+        f.write("P1 PPO  P2 PPO  P3 Rule-Based (Multi-Processing)\n")
         f.write("Games Played: " + str(len(merged_results)) + "\n")
 
         ### Player 1 Results (PPO) ###
@@ -236,7 +317,7 @@ if __name__ == "__main__":
         f.write("Player 1 Deal In (Loss Point): " + str(total_player_1_deal_in) + "\n")
         f.write("Player 1 Wins / Game Count: " + str(player_1_average_wins) + "\n\n")
 
-        ### Player 2 Results (Rule-Based) ###
+        ### Player 2 Results (PPO) ###
         player_2_total_score = sum(game[1] for game in merged_results)
         player_2_results = [game_result(game, 1) for game in merged_results]
         total_player_2_wins = player_2_results.count(1)
@@ -271,5 +352,5 @@ if __name__ == "__main__":
     print(f"Results saved to {output_filename}")
     print(f"Total games played: {len(merged_results)}")
     print(f"PPO Agent (Player 1) win rate: {player_1_average_wins:.4f}")
-    print(f"Rule-Based Agent (Player 2) win rate: {total_player_2_wins / len(merged_results):.4f}")
+    print(f"PPO Agent (Player 2) win rate: {total_player_2_wins / len(merged_results):.4f}")
     print(f"Rule-Based Agent (Player 3) win rate: {total_player_3_wins / len(merged_results):.4f}") 
