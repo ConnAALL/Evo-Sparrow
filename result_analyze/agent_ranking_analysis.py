@@ -1,304 +1,276 @@
 #!/usr/bin/env python3
 """
 Agent Ranking Analysis Script
-
-This script analyzes the performance of different agents in game matches
-and provides multiple mathematical approaches to determine the strongest agent.
+  • handles “%” columns
+  • supports N-player groupings
+  • head-to-head, overall win-rate
+  • multiplayer Elo
+  • tournament points
+  • Bradley–Terry
+  • raw W/D/L/Deal-In stats
+  • consensus ranking
 """
 
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-import math
-
 
 class AgentRankingAnalyzer:
-    def __init__(self, csv_file):
-        """Initialize the analyzer with the CSV file."""
+    def __init__(self, csv_file, group_size=3, k_factor=32, initial_elo=1500):
+        # --- load & clean ---
         self.df = pd.read_csv(csv_file)
+        # strip “%” from these columns and convert to [0..1]
+        for col in ('Wins','Draws','Losses','Deal-Ins'):
+            if col in self.df.columns:
+                self.df[col] = (
+                    self.df[col].astype(str)
+                              .str.rstrip('%')
+                              .astype(float)
+                              .div(100)
+                )
+        self.group_size = group_size
+        self.k = k_factor
+        self.init_elo = initial_elo
         self.matches = self._parse_matches()
-        
+        self.agents = sorted(self.df['Game'].unique())
+
     def _parse_matches(self):
-        """Parse the CSV into individual matches."""
+        """Group every group_size rows as one free-for-all match."""
+        df = self.df.dropna(how='all').reset_index(drop=True)
         matches = []
-        excluded_matches = 0
-        
-        # Remove rows with all NaN values (empty rows)
-        df_clean = self.df.dropna(how='all')
-        
-        # Group every 3 rows as a match
-        for i in range(0, len(df_clean), 3):
-            if i + 2 < len(df_clean):
-                match = df_clean.iloc[i:i+3].copy()
-                # Only include matches with complete data (no missing scores or agent names)
-                if (not match['Avg. Score'].isna().any() and 
-                    not match['Game'].isna().any() and 
-                    len(match) == 3 and
-                    all(isinstance(score, (int, float)) for score in match['Avg. Score'])):
-                    matches.append(match)
-                else:
-                    excluded_matches += 1
-                    print(f"Excluding incomplete match {excluded_matches}: {match['Game'].values}")
-        
-        print(f"Total complete matches found: {len(matches)}")
-        print(f"Incomplete matches excluded: {excluded_matches}")
-        
+        for i in range(0, len(df), self.group_size):
+            block = df.iloc[i:i+self.group_size]
+            if len(block) == self.group_size and not block['Avg. Score'].isna().any():
+                matches.append(block.copy())
+        print(f"Parsed {len(matches)} complete matches (group_size={self.group_size})")
         return matches
-    
+
+    # ── HEAD-TO-HEAD & OVERALL WIN-RATES ─────────────────────────────────────────
+
     def get_head_to_head_matrix(self):
-        """Create a head-to-head win matrix."""
-        agents = set()
-        for match in self.matches:
-            agents.update(match['Game'].values)
-        
-        agents = sorted(list(agents))
-        n_agents = len(agents)
-        
-        # Initialize matrices
-        win_matrix = defaultdict(lambda: defaultdict(int))
-        total_games = defaultdict(lambda: defaultdict(int))
-        
-        for match in self.matches:
-            # Sort by average score to determine ranking in this match
-            match_sorted = match.sort_values('Avg. Score', ascending=False)
-            agents_in_match = match_sorted['Game'].values
-            scores = match_sorted['Avg. Score'].values
-            
-            # Count wins (who beats whom)
-            for i, agent1 in enumerate(agents_in_match):
-                for j, agent2 in enumerate(agents_in_match):
-                    if i != j:
-                        total_games[agent1][agent2] += 1
-                        if scores[i] > scores[j]:
-                            win_matrix[agent1][agent2] += 1
-        
-        return win_matrix, total_games, agents
-    
+        """Return win_matrix[A][B] and total_games[A][B]."""
+        win = defaultdict(lambda: defaultdict(int))
+        total = defaultdict(lambda: defaultdict(int))
+        for m in self.matches:
+            sorted_m = m.sort_values('Avg. Score', ascending=False)
+            names = sorted_m['Game'].values
+            scores = sorted_m['Avg. Score'].values
+            for i, A in enumerate(names):
+                for j, B in enumerate(names):
+                    if A==B: continue
+                    total[A][B] += 1
+                    if scores[i] > scores[j]:
+                        win[A][B] += 1
+        return win, total
+
     def calculate_win_percentages(self):
-        """Calculate win percentages for each agent against others."""
-        win_matrix, total_games, agents = self.get_head_to_head_matrix()
-        
-        win_percentages = {}
-        for agent1 in agents:
-            win_percentages[agent1] = {}
-            for agent2 in agents:
-                if agent1 != agent2 and total_games[agent1][agent2] > 0:
-                    win_pct = win_matrix[agent1][agent2] / total_games[agent1][agent2]
-                    win_percentages[agent1][agent2] = win_pct
+        win, total = self.get_head_to_head_matrix()
+        wpct = {A:{} for A in self.agents}
+        for A in self.agents:
+            for B in self.agents:
+                if A==B or total[A][B]==0:
+                    wpct[A][B] = 0.0
                 else:
-                    win_percentages[agent1][agent2] = 0.0
-        
-        return win_percentages, agents
-    
-    def calculate_elo_ratings(self, k_factor=32, initial_rating=1500):
-        """Calculate Elo ratings based on match results."""
-        win_matrix, total_games, agents = self.get_head_to_head_matrix()
-        
-        # Initialize Elo ratings
-        elo_ratings = {agent: initial_rating for agent in agents}
-        
-        # Process each match
-        for match in self.matches:
-            match_sorted = match.sort_values('Avg. Score', ascending=False)
-            agents_in_match = match_sorted['Game'].values
-            scores = match_sorted['Avg. Score'].values
-            
-            # Update Elo for each pair in the match
-            for i, agent1 in enumerate(agents_in_match):
-                for j, agent2 in enumerate(agents_in_match):
-                    if i != j:
-                        # Expected score for agent1 against agent2
-                        expected_score = 1 / (1 + 10**((elo_ratings[agent2] - elo_ratings[agent1]) / 400))
-                        
-                        # Actual score (1 if agent1 wins, 0 if loses)
-                        actual_score = 1 if scores[i] > scores[j] else 0
-                        
-                        # Update Elo rating
-                        elo_ratings[agent1] += k_factor * (actual_score - expected_score)
-        
-        return elo_ratings
-    
+                    wpct[A][B] = win[A][B]/total[A][B]
+        return wpct
+
+    def calculate_overall_win_rate(self, win_pct):
+        """Weighted average of pairwise win% by encounter count."""
+        overall = {}
+        for A in self.agents:
+            num, den = 0.0, 0
+            for B in self.agents:
+                if A==B: continue
+                # count matches where A and B both appear
+                cnt = sum(1 for m in self.matches
+                          if A in m['Game'].values and B in m['Game'].values)
+                num += win_pct[A][B] * cnt
+                den += cnt
+            overall[A] = (num/den if den>0 else 0.0)
+        return overall
+
+    # ── MULTIPLAYER ELO ──────────────────────────────────────────────────────────
+
+    def calculate_multiplayer_elo(self):
+        R = {a: self.init_elo for a in self.agents}
+
+        for m in self.matches:
+            sorted_m = m.sort_values('Avg. Score', ascending=False)
+            # only unique agent names, in rank order
+            players = []
+            for g in sorted_m['Game']:
+                if g not in players:
+                    players.append(g)
+
+            # skip if there’s nobody to play against
+            if len(players) < 2:
+                continue
+
+            N = len(players)
+            # actual scores 1.0→0.0 for first→last
+            S = { players[i]: (N-1 - i)/(N-1) for i in range(N) }
+
+            # expected = average pairwise expectation
+            E = {}
+            for A in players:
+                exps = []
+                for B in players:
+                    if A == B: 
+                        continue
+                    exps.append(1 / (1 + 10**((R[B] - R[A]) / 400)))
+                E[A] = sum(exps) / len(exps)
+
+            # update
+            for A in players:
+                R[A] += self.k * (S[A] - E[A])
+
+        return R
+
+    # ── TOURNAMENT POINTS ────────────────────────────────────────────────────────
+
     def calculate_tournament_points(self):
-        """Calculate tournament-style points (3 for 1st, 2 for 2nd, 1 for 3rd, etc.)."""
-        agent_points = defaultdict(int)
-        agent_matches = defaultdict(int)
-        
-        for match in self.matches:
-            match_sorted = match.sort_values('Avg. Score', ascending=False)
-            agents_in_match = match_sorted['Game'].values
-            
-            # Award points based on ranking
-            points = [3, 2, 1]  # Assuming 3 agents per match
-            for i, agent in enumerate(agents_in_match):
-                if i < len(points):
-                    agent_points[agent] += points[i]
-                agent_matches[agent] += 1
-        
-        # Calculate average points per match
-        avg_points = {agent: agent_points[agent] / agent_matches[agent] 
-                     for agent in agent_points if agent_matches[agent] > 0}
-        
-        return avg_points, agent_points, agent_matches
-    
-    def calculate_bradley_terry_model(self, max_iterations=1000, tolerance=1e-6):
-        """Calculate Bradley-Terry model strengths."""
-        win_matrix, total_games, agents = self.get_head_to_head_matrix()
-        n_agents = len(agents)
-        
-        # Initialize strengths uniformly
-        strengths = {agent: 1.0 for agent in agents}
-        
-        for iteration in range(max_iterations):
-            new_strengths = {}
-            
-            for agent in agents:
-                numerator = sum(win_matrix[agent][opponent] for opponent in agents if opponent != agent)
-                denominator = sum(total_games[agent][opponent] * strengths[agent] / 
-                                (strengths[agent] + strengths[opponent]) 
-                                for opponent in agents if opponent != agent and total_games[agent][opponent] > 0)
-                
-                if denominator > 0:
-                    new_strengths[agent] = numerator / denominator
-                else:
-                    new_strengths[agent] = strengths[agent]
-            
-            # Normalize to prevent explosion
-            total_strength = sum(new_strengths.values())
-            if total_strength > 0:
-                new_strengths = {agent: strength / total_strength * n_agents 
-                               for agent, strength in new_strengths.items()}
-            
-            # Check for convergence
-            converged = all(abs(new_strengths[agent] - strengths[agent]) < tolerance 
-                          for agent in agents)
-            
-            strengths = new_strengths
-            
-            if converged:
+        pts = defaultdict(int)
+        cnt = defaultdict(int)
+        for m in self.matches:
+            sorted_m = m.sort_values('Avg. Score', ascending=False)
+            names = list(sorted_m['Game'])
+            # e.g. for 3 players use [3,2,1], for 4 use [4,3,2,1]
+            points = list(range(self.group_size, 0, -1))
+            for i,A in enumerate(names):
+                pts[A] += points[i]
+                cnt[A] += 1
+        avg_pts = {A: pts[A]/cnt[A] for A in pts}
+        return avg_pts, pts, cnt
+
+    # ── BRADLEY–TERRY ───────────────────────────────────────────────────────────
+
+    def calculate_bradley_terry(self, max_iter=1000, tol=1e-6):
+        win, total = self.get_head_to_head_matrix()
+        # init strengths
+        s = {A:1.0 for A in self.agents}
+        for _ in range(max_iter):
+            s_new = {}
+            for A in self.agents:
+                num = sum(win[A][B] for B in self.agents if B!=A)
+                den = sum(total[A][B]*s[A]/(s[A]+s[B])
+                          for B in self.agents
+                          if B!=A and total[A][B]>0)
+                s_new[A] = num/den if den>0 else s[A]
+            # normalize
+            tot = sum(s_new.values())
+            s_new = {A: (s_new[A]/tot*len(self.agents)) for A in s_new}
+            if all(abs(s_new[A]-s[A])<tol for A in self.agents):
                 break
-        
-        return strengths
-    
+            s = s_new
+        return s
+
+    # ── RAW AVG W/D/L/Deal-In ────────────────────────────────────────────────────
+
+    def calculate_raw_stats(self):
+        """Mean of your per-row % columns (Wins/Draws/Losses/Deal-Ins)."""
+        raw = {}
+        for A, dfA in self.df.groupby('Game'):
+            raw[A] = dfA[['Wins','Draws','Losses','Deal-Ins']].mean().to_dict()
+        return raw
+
+    # ── CONSENSUS RANKING ────────────────────────────────────────────────────────
+
+    def calculate_consensus(self, methods: dict):
+        """
+        methods: name → {agent:score}
+        lower rank=better, so we sort each method descending and record 1-based ranks.
+        """
+        ranks = defaultdict(list)
+        for name, scores in methods.items():
+            sorted_agents = sorted(scores, key=lambda A: scores[A], reverse=True)
+            for idx,A in enumerate(sorted_agents, start=1):
+                ranks[A].append(idx)
+        # average rank
+        avg_rank = {A: np.mean(ranks[A]) for A in ranks}
+        return avg_rank, ranks
+
+    # ── PRINT EVERYTHING ───────────────────────────────────────────────────────
+
     def print_comprehensive_analysis(self):
-        """Print comprehensive analysis of all ranking methods."""
-        print("=" * 80)
-        print("COMPREHENSIVE AGENT RANKING ANALYSIS")
-        print("=" * 80)
-        
-        print(f"\nTotal matches analyzed: {len(self.matches)}")
-        
-        # 1. Head-to-head win percentages
-        print("\n" + "1. HEAD-TO-HEAD WIN PERCENTAGES")
-        print("-" * 50)
-        win_percentages, agents = self.calculate_win_percentages()
-        
-        print(f"{'Agent':<8}", end="")
-        for agent in agents:
-            print(f"{agent:>8}", end="")
-        print()
-        
-        for agent1 in agents:
-            print(f"{agent1:<8}", end="")
-            for agent2 in agents:
-                if agent1 == agent2:
-                    print(f"{'--':>8}", end="")
-                else:
-                    pct = win_percentages[agent1][agent2] * 100
-                    print(f"{pct:>7.1f}%", end="")
-            print()
-        
-        # 2. Overall win rate
-        print("\n" + "2. OVERALL WIN RATE AGAINST ALL OPPONENTS")
-        print("-" * 50)
-        overall_win_rates = {}
-        for agent in agents:
-            total_wins = sum(win_percentages[agent][opp] * 
-                           len([m for m in self.matches if agent in m['Game'].values and opp in m['Game'].values])
-                           for opp in agents if opp != agent)
-            total_games = sum(len([m for m in self.matches if agent in m['Game'].values and opp in m['Game'].values])
-                            for opp in agents if opp != agent)
-            overall_win_rates[agent] = (total_wins / total_games * 100) if total_games > 0 else 0
-        
-        for agent, rate in sorted(overall_win_rates.items(), key=lambda x: x[1], reverse=True):
-            print(f"{agent}: {rate:.1f}%")
-        
-        # 3. Elo ratings
-        print("\n" + "3. ELO RATINGS")
-        print("-" * 50)
-        elo_ratings = self.calculate_elo_ratings()
-        for agent, rating in sorted(elo_ratings.items(), key=lambda x: x[1], reverse=True):
-            print(f"{agent}: {rating:.0f}")
-        
-        # 4. Tournament points
-        print("\n" + "4. TOURNAMENT POINTS SYSTEM")
-        print("-" * 50)
-        avg_points, total_points, total_matches = self.calculate_tournament_points()
-        print(f"{'Agent':<8} {'Avg Points':<12} {'Total Points':<13} {'Matches':<8}")
-        print("-" * 45)
-        for agent in sorted(avg_points.keys(), key=lambda x: avg_points[x], reverse=True):
-            print(f"{agent:<8} {avg_points[agent]:<12.2f} {total_points[agent]:<13} {total_matches[agent]:<8}")
-        
-        # 5. Bradley-Terry model
-        print("\n" + "5. BRADLEY-TERRY MODEL STRENGTHS")
-        print("-" * 50)
-        bt_strengths = self.calculate_bradley_terry_model()
-        for agent, strength in sorted(bt_strengths.items(), key=lambda x: x[1], reverse=True):
-            print(f"{agent}: {strength:.3f}")
-        
-        # 6. Final ranking consensus
-        print("\n" + "6. CONSENSUS RANKING")
-        print("-" * 50)
-        rankings = {}
-        
-        # Rank by each method
+        print("\n" + "="*60)
+        print(" COMPREHENSIVE AGENT RANKING ANALYSIS ")
+        print("="*60)
+        print(f"Total matches analyzed: {len(self.matches)}")
+
+        # 1. head-to-head %
+        print("\n1) HEAD-TO-HEAD WIN %")
+        win_pct = self.calculate_win_percentages()
+        agents = self.agents
+        header = "Agent   " + "".join(f"{a:>8}" for a in agents)
+        print(header)
+        for A in agents:
+            row = f"{A:<7}"
+            for B in agents:
+                row += f"{(win_pct[A][B]*100):8.1f}" if A!=B else f"{'   --':>8}"
+            print(row, "%")
+
+        # 2. overall win-rate
+        print("\n2) OVERALL WIN RATE")
+        overall = self.calculate_overall_win_rate(win_pct)
+        for A,r in sorted(overall.items(), key=lambda x:-x[1]):
+            print(f"  {A:<7} {r*100:5.1f}%")
+
+        # 3. multiplayer Elo
+        print("\n3) MULTIPLAYER ELO")
+        elo = self.calculate_multiplayer_elo()
+        for A,r in sorted(elo.items(), key=lambda x:-x[1]):
+            print(f"  {A:<7} {r:7.1f}")
+
+        # 4. tournament points
+        print("\n4) TOURNAMENT POINTS")
+        avg_pts, tot_pts, cnt = self.calculate_tournament_points()
+        print("Agent    AvgPts   TotPts  Matches")
+        for A in sorted(avg_pts, key=lambda x:-avg_pts[x]):
+            print(f"  {A:<7} {avg_pts[A]:7.2f} {tot_pts[A]:8d} {cnt[A]:8d}")
+
+        # 5. Bradley–Terry strengths
+        print("\n5) BRADLEY–TERRY STRENGTHS")
+        bt = self.calculate_bradley_terry()
+        for A,s in sorted(bt.items(), key=lambda x:-x[1]):
+            print(f"  {A:<7} {s:7.3f}")
+
+        # 6. raw W/D/L/Deal-Ins
+        print("\n6) RAW AVG W/D/L/DEAL-IN %")
+        raw = self.calculate_raw_stats()
+        for A, d in raw.items():
+            print(
+                f"  {A:<7} "
+                f"W {d['Wins']*100:5.1f}%  "
+                f"D {d['Draws']*100:5.1f}%  "
+                f"L {d['Losses']*100:5.1f}%  "
+                f"DI {d['Deal-Ins']*100:5.1f}%"
+            )
+
+        # 7. consensus ranking
         methods = {
-            'overall_win_rate': overall_win_rates,
-            'elo': elo_ratings,
-            'tournament_points': avg_points,
-            'bradley_terry': bt_strengths
+            'Win%': {A: overall[A] for A in agents},
+            'Elo': elo,
+            'Tourn': avg_pts,
+            'BT': bt
         }
-        
-        for method, scores in methods.items():
-            sorted_agents = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-            for i, agent in enumerate(sorted_agents):
-                if agent not in rankings:
-                    rankings[agent] = []
-                rankings[agent].append(i + 1)
-        
-        # Calculate average ranking
-        avg_rankings = {agent: np.mean(ranks) for agent, ranks in rankings.items()}
-        
-        print(f"{'Agent':<8} {'Avg Rank':<10} {'Rankings (Win%, Elo, Tourn, B-T)'}")
-        print("-" * 55)
-        for agent in sorted(avg_rankings.keys(), key=lambda x: avg_rankings[x]):
-            ranks_str = ", ".join(map(str, rankings[agent]))
-            print(f"{agent:<8} {avg_rankings[agent]:<10.1f} [{ranks_str}]")
-        
-        # Determine strongest agent
-        strongest_agent = min(avg_rankings.keys(), key=lambda x: avg_rankings[x])
-        print(f"\n🏆 STRONGEST AGENT: {strongest_agent}")
-        print(f"   Average ranking across all methods: {avg_rankings[strongest_agent]:.1f}")
-        
-        return strongest_agent, avg_rankings
+        avg_rank, all_ranks = self.calculate_consensus(methods)
+        print("\n7) CONSENSUS RANKING")
+        print("Agent   AvgRank   (Win%,Elo,Tourn,BT)")
+        for A in sorted(avg_rank, key=lambda x: avg_rank[x]):
+            ranks = ",".join(str(int(r)) for r in all_ranks[A])
+            print(f"  {A:<7} {avg_rank[A]:7.2f}    [{ranks}]")
+
+        champ = min(avg_rank, key=lambda x: avg_rank[x])
+        print(f"\n🏆  STRONGEST AGENT: {champ} (avg rank {avg_rank[champ]:.2f})\n")
 
 
 def main():
-    """Main function to run the analysis."""
     try:
-        analyzer = AgentRankingAnalyzer('results.csv')
-        strongest_agent, rankings = analyzer.print_comprehensive_analysis()
-        
-        print("\n" + "=" * 80)
-        print("ANALYSIS COMPLETE")
-        print("=" * 80)
-        print(f"The mathematically strongest agent is: {strongest_agent}")
-        
+        # if you have 4-player matches, set group_size=4
+        analyzer = AgentRankingAnalyzer('results.csv', group_size=3)
+        analyzer.print_comprehensive_analysis()
     except FileNotFoundError:
-        print("Error: results.csv file not found in the current directory.")
-        print("Please make sure the CSV file is in the same directory as this script.")
-    except Exception as e:
-        print(f"Error occurred during analysis: {str(e)}")
-
+        print("Error: results.csv not found.")
 
 if __name__ == "__main__":
     main()
