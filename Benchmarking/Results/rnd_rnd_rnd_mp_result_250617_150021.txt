@@ -1,0 +1,26 @@
+P1 RND  P2 RND  P3 RND (Multi-Processing)
+Games Played: 1000
+
+--- Player 1 (RND) Results ---
+Player 1 Total Score: -58.0
+Player 1 Total Wins: 89
+Player 1 Total Draws: 726
+Player 1 Total Loss (No Point Loss Someone Else Won): 62
+Player 1 Deal In (Loss Point): 123
+Player 1 Wins / Game Count: 0.089
+
+--- Player 2 (RND) Results ---
+Player 2 Total Score: 68.0
+Player 2 Total Wins: 86
+Player 2 Total Draws: 726
+Player 2 Total Loss (No Point Loss Someone Else Won): 69
+Player 2 Deal In (Loss Point): 119
+Player 2 Wins / Game Count: 0.086
+
+--- Player 3 (RND) Results ---
+Player 3 Total Score: -10.0
+Player 3 Total Wins: 100
+Player 3 Total Draws: 726
+Player 3 Total Loss (No Point Loss Someone Else Won): 53
+Player 3 Deal In (Loss Point): 121
+Player 3 Wins / Game Count: 0.1

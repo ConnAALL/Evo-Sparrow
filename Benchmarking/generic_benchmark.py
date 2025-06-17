@@ -357,6 +357,30 @@ def summarise_and_save(results: List[List[int]], p_types: Tuple[str, str, str]):
     print("Benchmark completed.\n  • Text summary :", full_path,
           "\n  • Scores saved :", db_path, "->", table_name)
 
+    # Print statistics to console
+    print("\nBenchmark Statistics:")
+    print("=" * 50)
+    print(f"Total games played: {len(results)}")
+    print("=" * 50)
+
+    for p_idx in range(3):
+        total_score = sum(game[p_idx] for game in results)
+        outcomes = [game_result(game, p_idx) for game in results]
+        total_wins = outcomes.count(1)
+        total_draws = outcomes.count(0)
+        total_loss = outcomes.count(-1)
+        total_deal_in = outcomes.count(-2)
+        avg_wins = total_wins / len(results)
+
+        print(f"\nPlayer {p_idx + 1} ({p_types[p_idx].upper()}):")
+        print("-" * 30)
+        print(f"Total Score      : {total_score}")
+        print(f"Total Wins       : {total_wins}")
+        print(f"Total Draws      : {total_draws}")
+        print(f"Total Losses     : {total_loss}")
+        print(f"Total Deal-ins   : {total_deal_in}")
+        print(f"Win Rate         : {avg_wins:.4f}")
+
 
 # ---------------------------------------------------------------------------
 # Main entry point – parses CLI arguments and orchestrates multiprocessing
